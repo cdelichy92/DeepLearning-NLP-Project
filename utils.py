@@ -1,182 +1,171 @@
+import json
+import numpy as np
 from collections import defaultdict
 
-import numpy as np
-import json
+DATA_PATH = 'snli_1.0/'
+LABEL_TO_INDEX = {'contradiction':0,
+                   'entailment':1,
+                   'neutral':2}
+INDEX_TO_LABEL = {v:k for k,v in LABEL_TO_INDEX.items()}
 
-class Vocab(object):
-  def __init__(self):
-    self.word_to_index = {}
-    self.index_to_word = {}
-    self.word_freq = defaultdict(int)
-    self.total_words = 0
-    self.unknown = '<unk>'
-    self.padding = '<pad>'
-    self.add_word(self.unknown, count=0)
-    self.add_word(self.padding, count=0)
+class Vocab():
 
-  def add_word(self, word, count=1):
-    if word not in self.word_to_index:
-      index = len(self.word_to_index)
-      self.word_to_index[word] = index
-      self.index_to_word[index] = word
-    self.word_freq[word] += count
+    def __init__(self):
+        self.word_to_index = {}
+        self.index_to_word = {}
+        self.total_words = 0 # total number of words parsed
+        self.word_freq = defaultdict(int)
+        self.padding = '<pad>'
+        self.unknown = '<unk>'
+        self._add_word(self.padding, count=0)
+        self._add_word(self.unknown, count=0)
+        self.embedding_matrix = None
 
-  def construct(self, words):
-    for word in words:
-      self.add_word(word)
-    self.total_words = float(sum(self.word_freq.values()))
-    print '{} total words with {} uniques'.format(self.total_words, len(self.word_freq))
 
-  def encode(self, word):
-    if word not in self.word_to_index:
-      word = self.unknown
-    return self.word_to_index[word]
+    def _add_word(self, word, count=1):
+        if word not in self.word_to_index:
+            index = len(self.word_to_index)
+            self.word_to_index[word] = index
+            self.index_to_word[index] = word
+        self.word_freq[word] += count
 
-  def decode(self, index):
-    return self.index_to_word[index]
+    def construct(self, words):
+        for word in words:
+            self._add_word(word)
+        self.total_words = sum(self.word_freq.values())
+        print('{} total words parsed and {} unique words'.format(self.total_words, len(self.word_freq)))
 
-  def __len__(self):
-    return len(self.word_freq)
 
-def get_snli_dataset(dataset='train'):
-  fn = 'snli_1.0/snli_1.0_{}.jsonl'
-  for line in open(fn.format(dataset)):
-    data = json.loads(line)
-    data_parsed = data["sentence1"].strip().split()
-    data_parsed += data["sentence2"].strip().split()
+    def encode(self, word):
+        if word in self.word_to_index:
+            return self.word_to_index[word]
+        else:
+            return self.word_to_index[self.unknown]
 
-    for word in data_parsed:
-        yield clean(word)
-      #yield word.replace('"','').replace('.','').replace(',','').lower()
-      
-def adjust_sentence_len(vocab, sentence, target_len):
+
+    def decode(self, index):
+        return index_to_word[index]
+
+
+    def __len__(self):
+        return len(self.word_freq)
+
+
+    def build_embedding_matrix(self, dim):
+        if dim == 100:
+            glove_file = 'glove/glove.6B/glove.6B.100d.txt'
+        else:
+            glove_file = 'glove/glove.840B.300d.txt'
+        self.embedding_matrix = np.zeros((self.__len__(), dim))
+        for line in open(glove_file, 'r'):
+            dat = line.split(' ')
+            word = dat[0]
+            if word in self.word_to_index:
+                embedding = np.array(dat[1:], dtype='float32')
+                self.embedding_matrix[self.word_to_index[word]] = embedding
+
+        self.embedding_matrix[self.word_to_index[self.unknown]] = \
+            -2*np.ones(dim, dtype='float32')
+
+
+def get_words_dataset(dataset='train'):
+    fp = DATA_PATH + 'snli_1.0_{}.jsonl'.format(dataset)
+    for line in open(fp, 'r'):
+        data = json.loads(line)
+        data_parsed = data['sentence1'].strip().split()
+        data_parsed += data['sentence2'].strip().split()
+        for word in data_parsed:
+            yield clean(word)
+
+
+def clean(string):
+    string = ( string.replace('.','')
+                 .replace(',', '')
+                 .replace('!', '')
+                 .replace('?', '')
+                 .replace('"', '') )
+    try:
+        # sometimes some symbols are left at the beginning/end of words
+        # (e.g. - / )
+        string = string[:] if string[0].isalpha() else string[1:]
+        string = string[:] if string[-1].isalpha() else string[:-1]
+    except IndexError:
+        pass
+    string = string.lower()
+    return string
+
+
+def pad_sentence(vocab, sentence, target_len, padding):
     if len(sentence) > target_len:
-            sentence=sentence[0:target_len]
+            sentence = sentence[0:target_len]
     else:
-        while len(sentence) < target_len:
-            sentence.insert(0,vocab.encode(vocab.padding))
-            #sentence.append(vocab.encode(vocab.padding))
+        fix = [vocab.encode(vocab.padding)]*(target_len-len(sentence))
+        sentence = fix + sentence if padding == 'pre' else sentence + fix
     return sentence
-    
-def clean(text):
-    return text.replace('"','').replace('.','').replace(',','').lower()
-    
-def get_snli_sentences(vocab, target_len, dataset='train'):
-    
-    #dataset could be "train", "test" or "dev"
-    fn = 'snli_1.0/snli_1.0_{}.jsonl'
-    
-    for line in open(fn.format(dataset)):
+
+
+def encode_sentence(vocab, sentence):
+    sent = clean(sentence).split()
+    encoded_sent = [vocab.encode(word) for word in sent]
+    return encoded_sent
+
+
+def get_sentences_dataset( vocab, target_len, dataset='train', padding='pre'):
+    fp = DATA_PATH + 'snli_1.0_{}.jsonl'.format(dataset)
+    for line in open(fp):
         data_line = json.loads(line)
         if "gold_label" not in data_line:
             continue
-#        sent1 = data_line["sentence1"].replace('.','').lower().split()
-#        sent2 = data_line["sentence2"].replace('.','').lower().split()
         sent1 = clean(data_line["sentence1"]).split()
         sent2 = clean(data_line["sentence2"]).split()
         try:
-            label = data_line["gold_label"].encode('utf-8')
+            label = LABEL_TO_INDEX[data_line["gold_label"]]
             if label == '-':
                 continue
         except:
             continue
         sent1 = [vocab.encode(word) for word in sent1]
         sent2 = [vocab.encode(word) for word in sent2]
-        sent1 = adjust_sentence_len(vocab, sent1, target_len)
-        sent2 = adjust_sentence_len(vocab, sent2, target_len)
-        sent1 = np.array(sent1,dtype=np.int32)
-        sent2 = np.array(sent2,dtype=np.int32)
-        yield sent1,sent2,label
+        len1, len2 = min(len(sent1), target_len), min(len(sent2), target_len)
+        if len1 == 0:
+            len1 = 1
+            sent1 = [vocab.encode(vocab.unknown)]
+        if len2 == 0:
+            len2 = 1
+            sent2 = [vocab.encode(vocab.unknown)]
+        sent1 = pad_sentence(vocab, sent1, target_len, padding)
+        sent2 = pad_sentence(vocab, sent2, target_len, padding)
+        sent1 = np.array(sent1, dtype=np.int32)
+        sent2 = np.array(sent2, dtype=np.int32)
+        yield sent1, sent2, len1, len2, label
 
-def get_features(tokens, wordVectors, sentence1, sentence2):
-    """ Obtain the sentence feature for sentiment analysis by averaging its word vectors """
-    # Implement computation for the sentence features given a sentence.                                                       
-    
-    # Inputs:                                                         
-    # - tokens: a dictionary that maps words to their indices in    
-    #          the word vector list                                
-    # - wordVectors: word vectors (each row) for all tokens                
-    # - sentence1: a list of words in the premise sentence
-    # - sentence2: a list of words in the hypothesis sentence
 
-    # Output:                                                         
-    # - input_vec: feature vector for the classifier
-
-    sent1_vec = np.zeros((wordVectors.shape[1],))
-    indices1 = [tokens[word] for word in sentence1 if word in tokens]
-    sent1_vec = np.mean(wordVectors[indices1, :], axis=0)
-    
-    sent2_vec = np.zeros((wordVectors.shape[1],))
-    indices2 = [tokens[word] for word in sentence2 if word in tokens]
-    sent2_vec = np.mean(wordVectors[indices2, :], axis=0)
-    
-    input_vec = np.concatenate((sent1_vec,sent2_vec), axis=1)
-    
-    return input_vec
-
-def data_iterator(orig_X, orig_y=None, batch_size=32, label_size=3, shuffle=False):
-  # Optionally shuffle the data before training
-  if shuffle:
-    indices = np.random.permutation(len(orig_X))
-    data_X = orig_X[indices]
+def data_iterator(orig_sent1, orig_sent2, orig_len1, orig_len2, orig_y=None, batch_size=32,
+        label_size=3, shuffle=True):
+    N = orig_sent1.shape[0]
+    if shuffle:
+        indices = np.random.permutation(N)
+    else:
+        indices = np.arange(N)
+    data_sent1, data_sent2 = orig_sent1[indices,:], orig_sent2[indices,:]
+    data_len1, data_len2 = orig_len1[indices], orig_len2[indices]
     data_y = orig_y[indices] if np.any(orig_y) else None
-  else:
-    data_X = orig_X
-    data_y = orig_y
-  ###
-  total_processed_examples = 0
-  total_steps = int(np.ceil(len(data_X) / float(batch_size)))
-  for step in xrange(total_steps):
-    # Create the batch by selecting up to batch_size elements
-    batch_start = step * batch_size
-    x = data_X[batch_start:batch_start + batch_size]
-    # Convert our target from the class index to a one hot vector
-    y = None
-    if np.any(data_y):
-      y_indices = data_y[batch_start:batch_start + batch_size]
-      y = np.zeros((len(x), label_size), dtype=np.int32)
-      y[np.arange(len(y_indices)), y_indices] = 1
-    ###
-    yield x, y
-    total_processed_examples += len(x)
-  # Sanity check to make sure we iterated over all the dataset as intended
-  assert total_processed_examples == len(data_X), 'Expected {} and processed {}'.format(len(data_X), total_processed_examples)
-  
-def data_iterator_lstm(orig_sent1, orig_sent2, orig_y=None, batch_size=32, label_size=3, shuffle=False):
-  # Optionally shuffle the data before training
-  if shuffle:
-    indices = np.random.permutation(orig_sent1.shape[0])
-    data_sent1 = orig_sent1[indices,:]
-    data_sent2 = orig_sent2[indices,:]
-    data_y = orig_y[indices] if np.any(orig_y) else None
-  else:
-    data_sent1 = orig_sent1
-    data_sent2 = orig_sent2
-    data_y = orig_y
-  ###
-  total_steps = int(np.ceil(orig_sent1.shape[0] / float(batch_size)))
-  for step in xrange(total_steps-1):
-    # Create the batch by selecting up to batch_size elements
-    batch_start = step * batch_size
-    sent1 = data_sent1[batch_start:batch_start + batch_size,:]
-    sent2 = data_sent2[batch_start:batch_start + batch_size,:]
-    # Convert our target from the class index to a one hot vector
-    y = None
-    if np.any(data_y):
-      y_indices = data_y[batch_start:batch_start + batch_size]
-      y = np.zeros((len(y_indices), label_size), dtype=np.int32)
-      y[np.arange(len(y_indices)), y_indices] = 1
-    ###
-    yield sent1, sent2, y
-  
-if __name__ == "__main__":
+    n_batches = int(np.ceil(N / batch_size))
+    for i in range(n_batches): # n_batches-1 so that all of the batches have batch_size size
+        sent1 = data_sent1[i*batch_size:min((i+1)*batch_size, N), :]
+        sent2 = data_sent2[i*batch_size:min((i+1)*batch_size, N), :]
+        len1 = data_len1[i*batch_size:min((i+1)*batch_size, N)]
+        len2 = data_len2[i*batch_size:min((i+1)*batch_size, N)]
+        y = None
+        if np.any(data_y):
+            y_indices = data_y[i*batch_size:min((i+1)*batch_size, N)]
+            y = np.zeros((len(y_indices), label_size), dtype=np.int32)
+            y[np.arange(len(y_indices)), y_indices] = 1
+        yield sent1, sent2, len1, len2, y
+
+
+if __name__ == '__main__':
     vocab = Vocab()
-    vocab.construct(get_snli_dataset('dev'))
-    counter = 1    
-    for thing in get_snli_sentences(vocab, 25, dataset='dev'):
-        counter+=1
-        print thing
-        if counter > 10:
-            break
-
-    print counter
+    vocab.construct(get_words_dataset(dataset='train'))
+    print(len(vocab))
+    print(vocab.word_to_index)

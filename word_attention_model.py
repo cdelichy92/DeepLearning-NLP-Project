@@ -1,5 +1,6 @@
 import sys
 import os
+os.environ["CUDA_VISIBLE_DEVICES"]="1"
 import time
 
 import numpy as np
@@ -22,10 +23,10 @@ class Config(object):
     sentence_embed_size = 600
     hidden_sizes = [256, 128, 64]
     max_epochs = 50
-    early_stopping = 3
+    early_stopping = 2
     kp = 0.85
-    lr = 0.0002
-    l2 = 0.0002
+    lr = 0.0001
+    l2 = 0.0005
     label_size = 3
 
     # sentence length
@@ -417,7 +418,7 @@ def train_model():
             best_val_loss = float('inf')
             best_val_epoch = 0
 
-            session.run(init)
+            #session.run(init)
             for epoch in range(config.max_epochs):
                 print('Epoch {}'.format(epoch))
                 start = time.time()

@@ -2,6 +2,7 @@ import sys
 import os
 os.environ["CUDA_VISIBLE_DEVICES"]="1"
 import time
+import pickle
 
 import numpy as np
 import tensorflow as tf
@@ -20,13 +21,13 @@ class Config(object):
     """
     batch_size = 64
     word_embed_size = 300
-    sentence_embed_size = 600
-    hidden_sizes = [256, 128, 64]
+    sentence_embed_size = 300
+    hidden_sizes = [128, 32]
     max_epochs = 50
-    early_stopping = 2
-    kp = 0.85
-    lr = 0.0001
-    l2 = 0.0005
+    early_stopping = 3
+    kp = 1.0
+    lr = 0.0002
+    l2 = 0.0003
     label_size = 3
 
     # sentence length
@@ -162,6 +163,7 @@ class Model():
 
         x1 = tf.nn.embedding_lookup(word_embeddings, self.sent1_ph)
         x2 = tf.nn.embedding_lookup(word_embeddings, self.sent2_ph)
+        x1, x2 = tf.nn.dropout(x1, kp), tf.nn.dropout(x2, kp)
 
         # encode premise sentence with 1st LSTM
         with tf.variable_scope('rnn1'):
@@ -192,15 +194,23 @@ class Model():
                 regularizer=tf.contrib.layers.l2_regularizer(config.l2))
         W_h = tf.get_variable(name='W_h', shape=[k, k],
                 regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+        b_M = tf.get_variable(name='b_M', initializer=tf.zeros([L, k]))
         W_r = tf.get_variable(name='W_r', shape=[k, k],
                 regularizer=tf.contrib.layers.l2_regularizer(config.l2))
         W_t = tf.get_variable(name='W_t', shape=[k, k],
                 regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+        b_r = tf.get_variable(name='b_r', initializer=tf.zeros([k]))
         w = tf.get_variable(name='w', shape=[k, 1],
                 regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+        b_a = tf.get_variable(name='b_a', initializer=tf.zeros([L]))
 
-        # attention mechanism recurrent function
-        def fn(rt_1, ht):
+        r0 = tf.zeros([tf.shape(self.len1_ph)[0], k])
+        attention = []
+        r_outputs = [r0]
+        for t in range(L):
+            ht = out2[:,t,:]
+            rt_1 = r_outputs[-1]
+
             Ht = tf.reshape(tf.tile(ht, [1, L]), [-1, L, k])
             Ht_mod = tf.reshape(Ht, [-1, k])
             Rt_1 = tf.reshape(tf.tile(rt_1, [1, L]), [-1, L, k])
@@ -210,17 +220,16 @@ class Model():
                              tf.reshape(tf.matmul(Ht_mod, W_h),
                                  [-1, L, k]) +
                              tf.reshape(tf.matmul(Rt_1_mod, W_r),
-                                 [-1, L, k]) )
+                                 [-1, L, k])  + b_M)
             Mt_w = tf.matmul(tf.reshape(Mt, [-1, k]), w)
-            alphat = tf.nn.softmax(tf.reshape(Mt_w,
-                [-1, 1, L], name="alpha"))
+            alphat = tf.nn.softmax(tf.reshape(Mt_w, [-1, 1, L]) + b_a)
             alphat_Y = tf.reshape(tf.matmul(alphat, Y), [-1, k])
-            rt = alphat_Y + tf.nn.tanh(tf.matmul(rt_1, W_t))
-            return rt
+            rt = alphat_Y + tf.nn.tanh(tf.matmul(rt_1, W_t) + b_r)
+            attention.append(alphat)
+            r_outputs.append(rt)
 
-        r_outputs = tf.scan(fn,
-                        tf.transpose(out2, [1, 0, 2]),
-                        initializer=tf.zeros([tf.shape(self.len1_ph)[0], k]))
+        r_outputs = tf.stack(r_outputs)
+        self.attention = tf.stack(attention)
         r_outputs = tf.transpose(r_outputs, [1, 0, 2])
 
         def get_last_relevant_output(out, seq_len):
@@ -229,19 +238,19 @@ class Model():
             last = tf.gather_nd(out, indx)
             return last
 
-        rN = get_last_relevant_output(r_outputs, self.len2_ph)
+        rN = get_last_relevant_output(r_outputs, self.len2_ph + 1)
         hN = get_last_relevant_output(out2, self.len2_ph)
 
         W_p = tf.get_variable(name='W_p', shape=[k, k],
                 regularizer=tf.contrib.layers.l2_regularizer(config.l2))
         W_x = tf.get_variable(name='W_x', shape=[k, k],
                 regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+        b_hs = tf.get_variable(name='b_hs', initializer=tf.zeros([k]))
 
         # sentence pair representation
-        h_s = tf.nn.tanh(tf.matmul(rN, W_p) + tf.matmul(hN, W_x))
+        h_s = tf.nn.tanh(tf.matmul(rN, W_p) + tf.matmul(hN, W_x) + b_hs)
 
         y = h_s
-        y = tf.nn.dropout(y, kp)
 
         # MLP classifier on top
         hidden_sizes = config.hidden_sizes
@@ -257,7 +266,6 @@ class Model():
             b = tf.get_variable(name='b{}'.format(layer),
                     initializer=tf.zeros([size]))
             y = tf.nn.relu(tf.matmul(y, W) + b)
-            y = tf.nn.dropout(y, kp)
 
         W_softmax = tf.get_variable(name='W_softmax',
                 shape=[hidden_sizes[-1], config.label_size],
@@ -350,13 +358,12 @@ class Model():
         return np.mean(losses), np.array(results)
 
 
-    def get_attention(self, session):
+    def get_attention(self, session, sent1, sent2):
         kp = 1.0
-        sent1 = """A man in a blue shirt standing in front of a garage-like structure
-        painted with geometric designs."""
-        sent2 = """A man is wearing a blue shirt"""
         sent1 = utils.encode_sentence(self.vocab, sent1)
+        print(sent1)
         sent2 = utils.encode_sentence(self.vocab, sent2)
+        print(sent2)
         sent1 = utils.pad_sentence(self.vocab, sent1, self.config.sent_len,
                 'post')
         sent2 = utils.pad_sentence(self.vocab, sent2, self.config.sent_len,
@@ -366,8 +373,8 @@ class Model():
         sent2_arr = np.array(sent2).reshape((1,-1))
         y = np.array([0,1,0]).reshape((1,-1))
         feed = self.create_feed_dict(sent1_arr, sent2_arr, len1, len2, y, kp)
-        preds, attention = session.run([self.predictions, self.attention], feed_dict=feed)
-        return preds, attention
+        preds, alphas = session.run([self.predictions, self.attention], feed_dict=feed)
+        return preds, alphas
 
 
 def print_confusion(confusion):
@@ -418,7 +425,7 @@ def train_model():
             best_val_loss = float('inf')
             best_val_epoch = 0
 
-            #session.run(init)
+            session.run(init)
             for epoch in range(config.max_epochs):
                 print('Epoch {}'.format(epoch))
                 start = time.time()
@@ -434,8 +441,7 @@ def train_model():
                                                       model.len1_dev,
                                                       model.len2_dev,
                                                       model.y_dev)
-                val_acc = np.mean(np.equal(predictions,
-                    model.y_dev))
+                val_acc = np.mean(np.equal(predictions, model.y_dev))
                 complete_loss_history.extend(loss_history)
                 train_acc_history.append(train_acc)
                 print('Training loss: {}'.format(train_loss))
@@ -445,9 +451,9 @@ def train_model():
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     best_val_epoch = epoch
-                if not os.path.exists("./weights"):
-                    os.makedirs("./weights")
-                saver.save(session, './weights/lstm.weights')
+                    if not os.path.exists("./weights"):
+                        os.makedirs("./weights")
+                    saver.save(session, './weights/lstm.weights')
                 if epoch - best_val_epoch > config.early_stopping:
                     break
     confusion = calculate_confusion(config, predictions, model.y_dev)
@@ -460,5 +466,33 @@ def train_model():
             clh.write("%f " % loss)
 
 
+def test_attention():
+    sentences1 = []
+    sentences2 = []
+    predictions = []
+    attentions = []
+    config = Config()
+    with tf.Graph().as_default():
+        model = Model(config)
+        saver = tf.train.Saver()
+        with tf.Session() as session:
+            saver.restore(session, './weights/lstm.weights')
+            for line in open('sentences.txt', 'r'):
+                sent1, sent2 = line.split('|')
+                sent1, sent2 = sent1.strip(), sent2.strip()
+                preds, attention = model.get_attention(session, sent1, sent2)
+                attention = np.squeeze(attention)
+                print(sent1)
+                print(sent2)
+                print(attention)
+                sentences1.append(sent1)
+                sentences2.append(sent2)
+                predictions.append(preds)
+                attentions.append(attention)
+    pickle.dump((sentences1, sentences2, predictions, attentions),
+            open('attention_results.pkl', 'wb'))
+
+
 if __name__ == "__main__":
     train_model()
+    #test_attention()

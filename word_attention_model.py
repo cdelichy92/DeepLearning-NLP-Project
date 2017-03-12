@@ -20,14 +20,14 @@ class Config(object):
         instantiation.
     """
     batch_size = 64
-    word_embed_size = 300
-    sentence_embed_size = 300
+    word_embed_size = 100
+    sentence_embed_size = 100
     hidden_sizes = [128, 32]
     max_epochs = 50
     early_stopping = 3
     kp = 1.0
-    lr = 0.0002
-    l2 = 0.0003
+    lr = 0.0005
+    l2 = 0.000
     label_size = 3
 
     # sentence length
@@ -164,6 +164,7 @@ class Model():
         x1 = tf.nn.embedding_lookup(word_embeddings, self.sent1_ph)
         x2 = tf.nn.embedding_lookup(word_embeddings, self.sent2_ph)
         x1, x2 = tf.nn.dropout(x1, kp), tf.nn.dropout(x2, kp)
+        print(x1.get_shape())
 
         # encode premise sentence with 1st LSTM
         with tf.variable_scope('rnn1'):
@@ -204,12 +205,11 @@ class Model():
                 regularizer=tf.contrib.layers.l2_regularizer(config.l2))
         b_a = tf.get_variable(name='b_a', initializer=tf.zeros([L]))
 
-        r0 = tf.zeros([tf.shape(self.len1_ph)[0], k])
+        rt_1 = tf.zeros([tf.shape(self.len1_ph)[0], k])
         attention = []
-        r_outputs = [r0]
+        r_outputs = [rt_1]
         for t in range(L):
             ht = out2[:,t,:]
-            rt_1 = r_outputs[-1]
 
             Ht = tf.reshape(tf.tile(ht, [1, L]), [-1, L, k])
             Ht_mod = tf.reshape(Ht, [-1, k])
@@ -225,6 +225,7 @@ class Model():
             alphat = tf.nn.softmax(tf.reshape(Mt_w, [-1, 1, L]) + b_a)
             alphat_Y = tf.reshape(tf.matmul(alphat, Y), [-1, k])
             rt = alphat_Y + tf.nn.tanh(tf.matmul(rt_1, W_t) + b_r)
+            #rt_1 = rt
             attention.append(alphat)
             r_outputs.append(rt)
 
@@ -279,7 +280,7 @@ class Model():
                 tf.losses.softmax_cross_entropy(self.labels_ph, logits)
                 )
         reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
-        self.loss = cross_entropy_loss + tf.add_n(reg_losses)
+        self.loss = cross_entropy_loss #+ tf.add_n(reg_losses)
 
         self.train_op = ( tf.train.AdamOptimizer(learning_rate=config.lr)
                 .minimize(self.loss) )

@@ -24,9 +24,9 @@ class Config(object):
     sentence_embed_size = 100
     hidden_sizes = [128, 32]
     max_epochs = 50
-    early_stopping = 3
-    kp = 0.9
-    lr = 0.0002
+    early_stopping = 5
+    kp = 1.0
+    lr = 0.001
     l2 = 0.000
     label_size = 3
 
@@ -34,17 +34,13 @@ class Config(object):
     # 25 is longer than 95% of the sentences in SNLI, see SPINN paper
     sent_len = 25
 
-    # max norm of the gradient for gradient clipping
-    max_grad_norm = 5
-    num_layers = 1
-
 
 class Model():
 
 
     def __init__(self, config):
         self.config = config
-        self.load_data()
+        self.load_data(debug=False)
         self.build_model()
 
 
@@ -161,77 +157,227 @@ class Model():
                 initializer=init_embeds,
                 trainable=False) # no fine-tuning of word embeddings
 
-        # x1 and x2 have shape (?, L, k)
         x1 = tf.nn.embedding_lookup(word_embeddings, self.sent1_ph)
         x2 = tf.nn.embedding_lookup(word_embeddings, self.sent2_ph)
         x1, x2 = tf.nn.dropout(x1, kp), tf.nn.dropout(x2, kp)
 
-        # encode premise sentence with 1st LSTM
-        with tf.variable_scope('rnn1'):
-            cell1 = tf.contrib.rnn.LSTMCell(num_units=k,
-                    state_is_tuple=True)
-            out1, fstate1 = tf.nn.dynamic_rnn(
-                cell=cell1,
-                inputs=x1,
-                sequence_length=self.len1_ph,
-                dtype=tf.float32)
+        def lstmn(x, length, scope):
+            with tf.variable_scope(scope):
+                W_h = tf.get_variable(name='W_h', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                W_hs = tf.get_variable(name='W_hs', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                W_x = tf.get_variable(name='W_x', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                b_M = tf.get_variable(name='b_M', initializer=tf.zeros([L, k]))
+                w = tf.get_variable(name='w', shape=[k, 1],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                b_a = tf.get_variable(name='b_a', initializer=tf.zeros([L]))
 
-        # encode hypothesis with 2nd LSTM
-        # using final state of 1st LSTM as initial state
-        with tf.variable_scope('rnn2'):
-            cell2 = tf.contrib.rnn.LSTMCell(num_units=k,
-                    state_is_tuple=True)
-            out2, fstate2 = tf.nn.dynamic_rnn(
-                cell=cell2,
-                inputs=x2,
-                sequence_length=self.len2_ph,
-                initial_state=fstate1,
-                dtype=tf.float32)
+                W_rnn_h_i = tf.get_variable(name='W_rnn_h_i', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                W_rnn_x_i = tf.get_variable(name='W_rnn_x_i', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                b_rnn_i = tf.get_variable(name='b_rnn_i', initializer=tf.zeros([k]))
 
-        Y = out1
-        Y_mod =tf.reshape(Y, [-1, k])
+                W_rnn_h_f = tf.get_variable(name='W_rnn_h_f', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                W_rnn_x_f = tf.get_variable(name='W_rnn_x_f', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                b_rnn_f = tf.get_variable(name='b_rnn_f', initializer=tf.zeros([k]))
 
-        W_y = tf.get_variable(name='W_y', shape=[k, k],
-                regularizer=tf.contrib.layers.l2_regularizer(config.l2))
-        W_h = tf.get_variable(name='W_h', shape=[k, k],
-                regularizer=tf.contrib.layers.l2_regularizer(config.l2))
-        b_M = tf.get_variable(name='b_M', initializer=tf.zeros([L, k]))
-        W_r = tf.get_variable(name='W_r', shape=[k, k],
-                regularizer=tf.contrib.layers.l2_regularizer(config.l2))
-        W_t = tf.get_variable(name='W_t', shape=[k, k],
-                regularizer=tf.contrib.layers.l2_regularizer(config.l2))
-        b_r = tf.get_variable(name='b_r', initializer=tf.zeros([k]))
-        w = tf.get_variable(name='w', shape=[k, 1],
-                regularizer=tf.contrib.layers.l2_regularizer(config.l2))
-        b_a = tf.get_variable(name='b_a', initializer=tf.zeros([L]))
+                W_rnn_h_o = tf.get_variable(name='W_rnn_h_o', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                W_rnn_x_o = tf.get_variable(name='W_rnn_x_o', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                b_rnn_o = tf.get_variable(name='b_rnn_o', initializer=tf.zeros([k]))
 
-        rt_1 = tf.zeros([tf.shape(self.len1_ph)[0], k])
-        attention = []
-        r_outputs = []
-        for t in range(L):
-            ht = out2[:,t,:]
+                W_rnn_h_c = tf.get_variable(name='W_rnn_h_c', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                W_rnn_x_c = tf.get_variable(name='W_rnn_x_c', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                b_rnn_c = tf.get_variable(name='b_rnn_c', initializer=tf.zeros([k]))
 
-            Ht = tf.reshape(tf.tile(ht, [1, L]), [-1, L, k])
-            Ht_mod = tf.reshape(Ht, [-1, k])
-            Rt_1 = tf.reshape(tf.tile(rt_1, [1, L]), [-1, L, k])
-            Rt_1_mod = tf.reshape(Rt_1, [-1, k])
-            Mt = tf.nn.tanh( tf.reshape(tf.matmul(Y_mod, W_y),
-                                 [-1, L, k]) +
-                             tf.reshape(tf.matmul(Ht_mod, W_h),
-                                 [-1, L, k]) +
-                             tf.reshape(tf.matmul(Rt_1_mod, W_r),
-                                 [-1, L, k])  + b_M)
-            Mt_w = tf.matmul(tf.reshape(Mt, [-1, k]), w)
-            alphat = tf.nn.softmax(tf.reshape(Mt_w, [-1, 1, L]) + b_a)
-            alphat_Y = tf.reshape(tf.matmul(alphat, Y), [-1, k])
-            rt = alphat_Y + tf.nn.tanh(tf.matmul(rt_1, W_t) + b_r)
-            rt_1 = rt
-            attention.append(alphat)
-            r_outputs.append(rt)
+                c0 = tf.zeros([tf.shape(length)[0], k])
+                h0 = tf.zeros([tf.shape(length)[0], k])
+                hst_1 = tf.zeros([tf.shape(length)[0], k])
+                Cl, Hl = [c0], [h0]
+                for t in range(L):
+                    Ct_1 = tf.stack(Cl, axis=1)
+                    Ht_1 = tf.stack(Hl, axis=1)
+                    H_mod = tf.reshape(Ht_1, [-1, k])
 
-        r_outputs = tf.stack(r_outputs)
-        self.attention = tf.stack(attention)
-        r_outputs = tf.transpose(r_outputs, [1, 0, 2])
+                    xt = x[:,t,:]
+                    Xt = tf.reshape(tf.tile(xt, [1, t+1]), [-1, t+1, k])
+                    Xt_mod = tf.reshape(Xt, [-1, k])
+
+                    Hst_1 = tf.reshape(tf.tile(hst_1, [1, t+1]), [-1, t+1, k])
+                    Hst_1_mod = tf.reshape(Hst_1, [-1, k])
+
+                    Mt = tf.nn.tanh( tf.reshape(tf.matmul(H_mod, W_h),
+                                         [-1, t+1, k]) +
+                                     tf.reshape(tf.matmul(Xt_mod, W_x),
+                                         [-1, t+1, k]) +
+                                     tf.reshape(tf.matmul(Hst_1_mod, W_hs),
+                                         [-1, t+1, k])  + b_M[:t+1])
+                    Mt_w = tf.matmul(tf.reshape(Mt, [-1, k]), w)
+                    alphat = tf.nn.softmax(tf.reshape(Mt_w, [-1, 1, t+1]) + b_a[:t+1])
+                    cst = tf.reshape(tf.matmul(alphat, Ct_1), [-1, k])
+                    hst = tf.reshape(tf.matmul(alphat, Ht_1), [-1, k])
+                    hst_1 = hst
+
+                    it = tf.sigmoid(tf.matmul(hst, W_rnn_h_i) +
+                                    tf.matmul(xt, W_rnn_x_i) +
+                                    b_rnn_i)
+                    ft = tf.sigmoid(tf.matmul(hst, W_rnn_h_f) +
+                                    tf.matmul(xt, W_rnn_x_f) +
+                                    b_rnn_f)
+                    ot = tf.sigmoid(tf.matmul(hst, W_rnn_h_o) +
+                                    tf.matmul(xt, W_rnn_x_o) +
+                                    b_rnn_o)
+                    cht = tf.nn.tanh(tf.matmul(hst, W_rnn_h_c) +
+                                     tf.matmul(xt, W_rnn_x_c) +
+                                     b_rnn_c)
+
+                    ct = ft*cst + it*cht
+                    ht = ot*tf.nn.tanh(ct)
+
+                    Cl.append(ct)
+                    Hl.append(ht)
+            return tf.stack(Hl[1:], axis=1), tf.stack(Cl[1:], axis=1)
+
+        Gamma, Alpha = lstmn(x1, self.len1_ph, 'lstmn1')
+        Gamma = tf.expand_dims(tf.sequence_mask(self.len1_ph, L,
+            dtype=tf.float32), -1)*Gamma
+        Alpha = tf.expand_dims(tf.sequence_mask(self.len1_ph, L,
+            dtype=tf.float32), -1)*Alpha
+
+        def lstmn2(x, length, A, G, scope):
+            with tf.variable_scope(scope):
+                W_h = tf.get_variable(name='W_h', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                W_hs = tf.get_variable(name='W_hs', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                W_x = tf.get_variable(name='W_x', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                b_M = tf.get_variable(name='b_M', initializer=tf.zeros([L, k]))
+
+                w = tf.get_variable(name='w', shape=[k, 1],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                b_a = tf.get_variable(name='b_a', initializer=tf.zeros([L]))
+
+                W_rnn_h_i = tf.get_variable(name='W_rnn_h_i', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                W_rnn_x_i = tf.get_variable(name='W_rnn_x_i', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                b_rnn_i = tf.get_variable(name='b_rnn_i', initializer=tf.zeros([k]))
+
+                W_rnn_h_f = tf.get_variable(name='W_rnn_h_f', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                W_rnn_x_f = tf.get_variable(name='W_rnn_x_f', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                b_rnn_f = tf.get_variable(name='b_rnn_f', initializer=tf.zeros([k]))
+
+                W_rnn_h_o = tf.get_variable(name='W_rnn_h_o', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                W_rnn_x_o = tf.get_variable(name='W_rnn_x_o', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                b_rnn_o = tf.get_variable(name='b_rnn_o', initializer=tf.zeros([k]))
+
+                W_rnn_h_c = tf.get_variable(name='W_rnn_h_c', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                W_rnn_x_c = tf.get_variable(name='W_rnn_x_c', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                b_rnn_c = tf.get_variable(name='b_rnn_c', initializer=tf.zeros([k]))
+
+                W_g = tf.get_variable(name='W_g', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                W_gs = tf.get_variable(name='W_gs', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                W_xx = tf.get_variable(name='W_xx', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                b_N = tf.get_variable(name='b_N', initializer=tf.zeros([L, k]))
+
+                u = tf.get_variable(name='u', shape=[k, 1],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                b_b = tf.get_variable(name='b_b', initializer=tf.zeros([L]))
+
+                W_r_gs = tf.get_variable(name='W_r_gs', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                W_r_x = tf.get_variable(name='W_r_x', shape=[k, k],
+                        regularizer=tf.contrib.layers.l2_regularizer(config.l2))
+                b_r = tf.get_variable(name='b_r', initializer=tf.zeros([k]))
+
+                c0 = tf.zeros([tf.shape(length)[0], k])
+                h0 = tf.zeros([tf.shape(length)[0], k])
+                hst_1 = tf.zeros([tf.shape(length)[0], k])
+                gst_1 = tf.zeros([tf.shape(length)[0], k])
+                Cl, Hl = [c0], [h0]
+                for t in range(L):
+                    Ct_1 = tf.stack(Cl, axis=1)
+                    Ht_1 = tf.stack(Hl, axis=1)
+                    H_mod = tf.reshape(Ht_1, [-1, k])
+
+                    xt = x[:,t,:]
+                    Xt = tf.reshape(tf.tile(xt, [1, t+1]), [-1, t+1, k])
+                    Xt_mod = tf.reshape(Xt, [-1, k])
+
+                    Hst_1 = tf.reshape(tf.tile(hst_1, [1, t+1]), [-1, t+1, k])
+                    Hst_1_mod = tf.reshape(Hst_1, [-1, k])
+
+                    Mt = tf.nn.tanh( tf.reshape(tf.matmul(H_mod, W_h),
+                                         [-1, t+1, k]) +
+                                     tf.reshape(tf.matmul(Xt_mod, W_x),
+                                         [-1, t+1, k]) +
+                                     tf.reshape(tf.matmul(Hst_1_mod, W_hs),
+                                         [-1, t+1, k])  + b_M[:t+1])
+                    Mt_w = tf.matmul(tf.reshape(Mt, [-1, k]), w)
+                    alphat = tf.nn.softmax(tf.reshape(Mt_w, [-1, 1, t+1]) + b_a[:t+1])
+                    cst = tf.reshape(tf.matmul(alphat, Ct_1), [-1, k])
+                    hst = tf.reshape(tf.matmul(alphat, Ht_1), [-1, k])
+                    hst_1 = hst
+
+                    it = tf.sigmoid(tf.matmul(hst, W_rnn_h_i) +
+                                    tf.matmul(xt, W_rnn_x_i) +
+                                    b_rnn_i)
+                    ft = tf.sigmoid(tf.matmul(hst, W_rnn_h_f) +
+                                    tf.matmul(xt, W_rnn_x_f) +
+                                    b_rnn_f)
+                    ot = tf.sigmoid(tf.matmul(hst, W_rnn_h_o) +
+                                    tf.matmul(xt, W_rnn_x_o) +
+                                    b_rnn_o)
+                    cht = tf.nn.tanh(tf.matmul(hst, W_rnn_h_c) +
+                                     tf.matmul(xt, W_rnn_x_c) +
+                                     b_rnn_c)
+
+                    G_mod = tf.reshape(G, [-1, k])
+                    Xt = tf.reshape(tf.tile(xt, [1, L]), [-1, L, k])
+                    Xt_mod = tf.reshape(Xt, [-1, k])
+                    Gst_1 = tf.reshape(tf.tile(gst_1, [1, L]), [-1, L, k])
+                    Gst_1_mod = tf.reshape(Gst_1, [-1, k])
+
+                    Nt = tf.nn.tanh( tf.reshape(tf.matmul(G_mod, W_g),
+                                         [-1, L, k]) +
+                                     tf.reshape(tf.matmul(Xt_mod, W_xx),
+                                         [-1, L, k]) +
+                                     tf.reshape(tf.matmul(Gst_1_mod, W_gs),
+                                         [-1, L, k])  + b_N)
+                    Nt_u = tf.matmul(tf.reshape(Nt, [-1, k]), u)
+                    betat = tf.nn.softmax(tf.reshape(Nt_u, [-1, 1, L]) + b_b)
+                    gst = tf.reshape(tf.matmul(betat, G), [-1, k])
+                    ast = tf.reshape(tf.matmul(betat, A), [-1, k])
+                    gst_1 = gst
+                    rt = tf.sigmoid(tf.matmul(gst, W_r_gs) +
+                                    tf.matmul(xt, W_r_x) +
+                                    b_r)
+
+                    ct = rt*ast + ft*cst + it*cht
+                    ht = ot*tf.nn.tanh(ct)
+
+                    Cl.append(ct)
+                    Hl.append(ht)
+            return ( tf.transpose(tf.stack(Hl[1:]), [1, 0, 2]),
+                     tf.transpose(tf.stack(Cl[1:]), [1, 0, 2]) )
 
         def get_last_relevant_output(out, seq_len):
             rng = tf.range(0, tf.shape(seq_len)[0])
@@ -239,19 +385,10 @@ class Model():
             last = tf.gather_nd(out, indx)
             return last
 
-        rN = get_last_relevant_output(r_outputs, self.len2_ph)
-        hN = get_last_relevant_output(out2, self.len2_ph)
+        H2, _ = lstmn2(x2, self.len2_ph, Alpha, Gamma, 'lstmn2')
+        h2 = get_last_relevant_output(H2, self.len2_ph)
 
-        W_p = tf.get_variable(name='W_p', shape=[k, k],
-                regularizer=tf.contrib.layers.l2_regularizer(config.l2))
-        W_x = tf.get_variable(name='W_x', shape=[k, k],
-                regularizer=tf.contrib.layers.l2_regularizer(config.l2))
-        b_hs = tf.get_variable(name='b_hs', initializer=tf.zeros([k]))
-
-        # sentence pair representation
-        h_s = tf.nn.tanh(tf.matmul(rN, W_p) + tf.matmul(hN, W_x) + b_hs)
-
-        y = h_s
+        y = h2
 
         # MLP classifier on top
         hidden_sizes = config.hidden_sizes
@@ -359,25 +496,6 @@ class Model():
         return np.mean(losses), np.array(results)
 
 
-    def get_attention(self, session, sent1, sent2):
-        kp = 1.0
-        sent1 = utils.encode_sentence(self.vocab, sent1)
-        print(sent1)
-        sent2 = utils.encode_sentence(self.vocab, sent2)
-        print(sent2)
-        sent1 = utils.pad_sentence(self.vocab, sent1, self.config.sent_len,
-                'post')
-        sent2 = utils.pad_sentence(self.vocab, sent2, self.config.sent_len,
-                'post')
-        len1, len2 = np.array([len(sent1)]), np.array([len(sent2)])
-        sent1_arr = np.array(sent1).reshape((1,-1))
-        sent2_arr = np.array(sent2).reshape((1,-1))
-        y = np.array([0,1,0]).reshape((1,-1))
-        feed = self.create_feed_dict(sent1_arr, sent2_arr, len1, len2, y, kp)
-        preds, alphas = session.run([self.predictions, self.attention], feed_dict=feed)
-        return preds, alphas
-
-
 def print_confusion(confusion):
     """Helper method that prints confusion matrix."""
     # Summing top to bottom gets the total number of tags guessed as T
@@ -427,7 +545,6 @@ def train_model():
             best_val_epoch = 0
 
             session.run(init)
-            #saver.restore(session, './weights/lstm.weights')
             for epoch in range(config.max_epochs):
                 print('Epoch {}'.format(epoch))
                 start = time.time()
@@ -468,33 +585,5 @@ def train_model():
             clh.write("%f " % loss)
 
 
-def test_attention():
-    sentences1 = []
-    sentences2 = []
-    predictions = []
-    attentions = []
-    config = Config()
-    with tf.Graph().as_default():
-        model = Model(config)
-        saver = tf.train.Saver()
-        with tf.Session() as session:
-            saver.restore(session, './weights/lstm.weights')
-            for line in open('sentences.txt', 'r'):
-                sent1, sent2 = line.split('|')
-                sent1, sent2 = sent1.strip(), sent2.strip()
-                preds, attention = model.get_attention(session, sent1, sent2)
-                attention = np.squeeze(attention)
-                print(sent1)
-                print(sent2)
-                print(attention)
-                sentences1.append(sent1)
-                sentences2.append(sent2)
-                predictions.append(preds)
-                attentions.append(attention)
-    pickle.dump((sentences1, sentences2, predictions, attentions),
-            open('attention_results.pkl', 'wb'))
-
-
 if __name__ == "__main__":
     train_model()
-    #test_attention()

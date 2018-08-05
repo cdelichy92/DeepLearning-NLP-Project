@@ -497,4 +497,4 @@ def test_attention():
 
 if __name__ == "__main__":
     train_model()
-    #test_attention()
+    test_attention()

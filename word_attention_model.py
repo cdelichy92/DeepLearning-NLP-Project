@@ -20,13 +20,13 @@ class Config(object):
         instantiation.
     """
     batch_size = 64
-    word_embed_size = 100
-    sentence_embed_size = 100
+    word_embed_size = 300
+    sentence_embed_size = 300
     hidden_sizes = [128, 32]
     max_epochs = 50
     early_stopping = 3
     kp = 0.9
-    lr = 0.0002
+    lr = 0.001
     l2 = 0.000
     label_size = 3
 
@@ -170,6 +170,8 @@ class Model():
         with tf.variable_scope('rnn1'):
             cell1 = tf.contrib.rnn.LSTMCell(num_units=k,
                     state_is_tuple=True)
+            cell1 = tf.contrib.rnn.DropoutWrapper(cell1, input_keep_prob=kp,
+                    output_keep_prob=kp)
             out1, fstate1 = tf.nn.dynamic_rnn(
                 cell=cell1,
                 inputs=x1,
@@ -181,6 +183,8 @@ class Model():
         with tf.variable_scope('rnn2'):
             cell2 = tf.contrib.rnn.LSTMCell(num_units=k,
                     state_is_tuple=True)
+            cell2 = tf.contrib.rnn.DropoutWrapper(cell2, input_keep_prob=kp,
+                    output_keep_prob=kp)
             out2, fstate2 = tf.nn.dynamic_rnn(
                 cell=cell2,
                 inputs=x2,
@@ -220,11 +224,11 @@ class Model():
                              tf.reshape(tf.matmul(Ht_mod, W_h),
                                  [-1, L, k]) +
                              tf.reshape(tf.matmul(Rt_1_mod, W_r),
-                                 [-1, L, k])  + b_M)
+                                 [-1, L, k]) )
             Mt_w = tf.matmul(tf.reshape(Mt, [-1, k]), w)
-            alphat = tf.nn.softmax(tf.reshape(Mt_w, [-1, 1, L]) + b_a)
+            alphat = tf.nn.softmax(tf.reshape(Mt_w, [-1, 1, L]) )
             alphat_Y = tf.reshape(tf.matmul(alphat, Y), [-1, k])
-            rt = alphat_Y + tf.nn.tanh(tf.matmul(rt_1, W_t) + b_r)
+            rt = alphat_Y + tf.nn.tanh(tf.matmul(rt_1, W_t) )
             rt_1 = rt
             attention.append(alphat)
             r_outputs.append(rt)
@@ -249,7 +253,7 @@ class Model():
         b_hs = tf.get_variable(name='b_hs', initializer=tf.zeros([k]))
 
         # sentence pair representation
-        h_s = tf.nn.tanh(tf.matmul(rN, W_p) + tf.matmul(hN, W_x) + b_hs)
+        h_s = tf.nn.tanh(tf.matmul(rN, W_p) + tf.matmul(hN, W_x) )
 
         y = h_s
 
@@ -267,6 +271,7 @@ class Model():
             b = tf.get_variable(name='b{}'.format(layer),
                     initializer=tf.zeros([size]))
             y = tf.nn.relu(tf.matmul(y, W) + b)
+            y = tf.nn.dropout(y, kp)
 
         W_softmax = tf.get_variable(name='W_softmax',
                 shape=[hidden_sizes[-1], config.label_size],
@@ -282,8 +287,10 @@ class Model():
         reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
         self.loss = cross_entropy_loss #+ tf.add_n(reg_losses)
 
-        self.train_op = ( tf.train.AdamOptimizer(learning_rate=config.lr)
-                .minimize(self.loss) )
+        optimizer = tf.train.AdamOptimizer(learning_rate=config.lr)
+        gradients, variables = zip(*optimizer.compute_gradients(self.loss))
+        gradients, _ = tf.clip_by_global_norm(gradients, config.max_grad_norm)
+        self.train_op = optimizer.apply_gradients(zip(gradients, variables))
 
         self.probs = tf.nn.softmax(logits)
         self.predictions = tf.argmax(self.probs, 1)
@@ -484,9 +491,6 @@ def test_attention():
                 sent1, sent2 = sent1.strip(), sent2.strip()
                 preds, attention = model.get_attention(session, sent1, sent2)
                 attention = np.squeeze(attention)
-                print(sent1)
-                print(sent2)
-                print(attention)
                 sentences1.append(sent1)
                 sentences2.append(sent2)
                 predictions.append(preds)

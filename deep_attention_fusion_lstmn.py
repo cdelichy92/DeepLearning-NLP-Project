@@ -1,6 +1,6 @@
 import sys
 import os
-os.environ["CUDA_VISIBLE_DEVICES"]="1"
+os.environ["CUDA_VISIBLE_DEVICES"]="0"
 import time
 import pickle
 
@@ -20,19 +20,21 @@ class Config(object):
         instantiation.
     """
     batch_size = 64
-    word_embed_size = 100
-    sentence_embed_size = 100
+    word_embed_size = 300
+    sentence_embed_size = 300
     hidden_sizes = [128, 32]
     max_epochs = 50
     early_stopping = 5
-    kp = 1.0
-    lr = 0.001
-    l2 = 0.000
+    kp = 0.9
+    lr = 0.0005
+    l2 = 0.0001
     label_size = 3
 
     # sentence length
     # 25 is longer than 95% of the sentences in SNLI, see SPINN paper
     sent_len = 25
+
+    max_grad_norm = 5
 
 
 class Model():
@@ -404,6 +406,7 @@ class Model():
             b = tf.get_variable(name='b{}'.format(layer),
                     initializer=tf.zeros([size]))
             y = tf.nn.relu(tf.matmul(y, W) + b)
+            #y = tf.nn.dropout(y, kp)
 
         W_softmax = tf.get_variable(name='W_softmax',
                 shape=[hidden_sizes[-1], config.label_size],
@@ -417,7 +420,7 @@ class Model():
                 tf.losses.softmax_cross_entropy(self.labels_ph, logits)
                 )
         reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
-        self.loss = cross_entropy_loss #+ tf.add_n(reg_losses)
+        self.loss = cross_entropy_loss + tf.add_n(reg_losses)
 
         self.train_op = ( tf.train.AdamOptimizer(learning_rate=config.lr)
                 .minimize(self.loss) )
@@ -572,7 +575,7 @@ def train_model():
                     best_val_epoch = epoch
                     if not os.path.exists("./weights"):
                         os.makedirs("./weights")
-                    saver.save(session, './weights/lstm.weights')
+                    saver.save(session, './weights/lstmn.weights')
                 if epoch - best_val_epoch > config.early_stopping:
                     break
     confusion = calculate_confusion(config, predictions, model.y_dev)

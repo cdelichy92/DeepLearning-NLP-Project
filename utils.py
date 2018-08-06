@@ -44,7 +44,7 @@ class Vocab():
 
 
     def decode(self, index):
-        return index_to_word[index]
+        return self.index_to_word[index]
 
 
     def __len__(self):
@@ -63,6 +63,10 @@ class Vocab():
             if word in self.word_to_index:
                 embedding = np.array(dat[1:], dtype='float32')
                 self.embedding_matrix[self.word_to_index[word]] = embedding
+        unknown_words = set([self.index_to_word[i] for i in
+            range(len(self.embedding_matrix)) if
+            np.count_nonzero(self.embedding_matrix[i])==0])
+        print('words with no embeddings: {}'.format(len(unknown_words)))
 
         self.embedding_matrix[self.word_to_index[self.unknown]] = \
             -2*np.ones(dim, dtype='float32')
@@ -83,7 +87,9 @@ def clean(string):
                  .replace(',', '')
                  .replace('!', '')
                  .replace('?', '')
-                 .replace('"', '') )
+                 .replace('"', '')
+                 .replace(';', '')
+                 .replace(':', '') )
     try:
         # sometimes some symbols are left at the beginning/end of words
         # (e.g. - / )

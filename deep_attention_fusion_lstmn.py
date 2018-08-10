@@ -255,6 +255,7 @@ class Model():
             dtype=tf.float32), -1)*Alpha
 
         def lstmn2(x, length, A, G, scope):
+            betat_list = []
             with tf.variable_scope(scope):
                 W_h = tf.get_variable(name='W_h', shape=[k, k],
                         regularizer=tf.contrib.layers.l2_regularizer(config.l2))
@@ -378,8 +379,10 @@ class Model():
 
                     Cl.append(ct)
                     Hl.append(ht)
+                    betat_list.append(betat)
             return ( tf.transpose(tf.stack(Hl[1:]), [1, 0, 2]),
-                     tf.transpose(tf.stack(Cl[1:]), [1, 0, 2]) )
+                     tf.transpose(tf.stack(Cl[1:]), [1, 0, 2]),
+                     betat_list )
 
         def get_last_relevant_output(out, seq_len):
             rng = tf.range(0, tf.shape(seq_len)[0])
@@ -387,7 +390,7 @@ class Model():
             last = tf.gather_nd(out, indx)
             return last
 
-        H2, _ = lstmn2(x2, self.len2_ph, Alpha, Gamma, 'lstmn2')
+        H2, _, self.attention = lstmn2(x2, self.len2_ph, Alpha, Gamma, 'lstmn2')
         h2 = get_last_relevant_output(H2, self.len2_ph)
 
         y = h2
@@ -422,8 +425,10 @@ class Model():
         reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
         self.loss = cross_entropy_loss + tf.add_n(reg_losses)
 
-        self.train_op = ( tf.train.AdamOptimizer(learning_rate=config.lr)
-                .minimize(self.loss) )
+        optimizer = tf.train.AdamOptimizer(learning_rate=config.lr)
+        gradients, variables = zip(*optimizer.compute_gradients(self.loss))
+        gradients, _ = tf.clip_by_global_norm(gradients, config.max_grad_norm)
+        self.train_op = optimizer.apply_gradients(zip(gradients, variables))
 
         self.probs = tf.nn.softmax(logits)
         self.predictions = tf.argmax(self.probs, 1)
@@ -497,6 +502,25 @@ class Model():
                 preds = session.run(self.predictions, feed_dict=feed)
             results.extend(preds)
         return np.mean(losses), np.array(results)
+
+
+    def get_attention(self, session, sent1, sent2):
+        kp = 1.0
+        sent1 = utils.encode_sentence(self.vocab, sent1)
+        print(sent1)
+        sent2 = utils.encode_sentence(self.vocab, sent2)
+        print(sent2)
+        sent1 = utils.pad_sentence(self.vocab, sent1, self.config.sent_len,
+                'post')
+        sent2 = utils.pad_sentence(self.vocab, sent2, self.config.sent_len,
+                'post')
+        len1, len2 = np.array([len(sent1)]), np.array([len(sent2)])
+        sent1_arr = np.array(sent1).reshape((1,-1))
+        sent2_arr = np.array(sent2).reshape((1,-1))
+        y = np.array([0,1,0]).reshape((1,-1))
+        feed = self.create_feed_dict(sent1_arr, sent2_arr, len1, len2, y, kp)
+        preds, betas = session.run([self.predictions, self.attention], feed_dict=feed)
+        return preds, betas
 
 
 def print_confusion(confusion):
@@ -588,5 +612,30 @@ def train_model():
             clh.write("%f " % loss)
 
 
+def test_attention():
+    sentences1 = []
+    sentences2 = []
+    predictions = []
+    attentions = []
+    config = Config()
+    with tf.Graph().as_default():
+        model = Model(config)
+        saver = tf.train.Saver()
+        with tf.Session() as session:
+            saver.restore(session, './weights/lstmn.weights')
+            for line in open('sentences.txt', 'r'):
+                sent1, sent2 = line.split('|')
+                sent1, sent2 = sent1.strip(), sent2.strip()
+                preds, attention = model.get_attention(session, sent1, sent2)
+                attention = np.squeeze(attention)
+                sentences1.append(sent1)
+                sentences2.append(sent2)
+                predictions.append(preds)
+                attentions.append(attention)
+    pickle.dump((sentences1, sentences2, predictions, attentions),
+            open('attention_results.pkl', 'wb'))
+
+
 if __name__ == "__main__":
-    train_model()
+    #train_model()
+    test_attention()

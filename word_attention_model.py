@@ -22,12 +22,12 @@ class Config(object):
     batch_size = 64
     word_embed_size = 300
     sentence_embed_size = 300
-    hidden_sizes = [128, 32]
+    hidden_sizes = [128]
     max_epochs = 50
     early_stopping = 3
-    kp = 0.9
-    lr = 0.001
-    l2 = 0.000
+    kp = 1.0
+    lr = 0.0008
+    l2 = 0.0003
     label_size = 3
 
     # sentence length
